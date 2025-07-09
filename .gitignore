@@ -12,3 +12,8 @@ main/app_configuration.h
 sdkconfig.esp32dev.old
 sdkconfig.old
 sdkconfig
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+**/data/
