@@ -30,6 +30,9 @@
 #include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/micro/micro_log.h"
 
+// human - no human classifier
+#include "minisqueezenet_96.h"
+
 // shorten CONFIG names
 #define CONF(name) CONFIG_SNAP_ ## name
 
@@ -41,6 +44,16 @@ void start_mqtt_client();
 const char *TAG = "main";
 MQTTClient *mqtt = nullptr;
 QueueHandle_t camera_evt_queue = nullptr;  // FreeRTOS queue for camera trigger events
+
+//tf lite micro
+const tflite::Model* tflu_model = nullptr;
+tflite::MicroInterpreter* tflu_interpreter = nullptr;
+TfLiteTensor* tflu_i_tensor = nullptr;
+TfLiteTensor* tflu_o_tensor = nullptr;
+constexpr int tensor_arena_size = 144000;
+uint8_t *tensor_arena = nullptr;
+float tflu_scale = 0.0f;
+int32_t tflu_zeropoint = 0;
 
 extern "C" void app_main()
 {
@@ -99,6 +112,11 @@ void camera_task(void *p)
                 auto src = pic.image();
                 auto slen = pic.size();
                 size_t olen;
+
+                ESP_LOGI(TAG, "pic size: %zu", slen);
+                fmt2rgb888(pic->buf, pic->len, PIXFORMAT_JPEG, img_color);
+
+                resizeColorImage(img_color, 160, 120, img_color, 96, 96);
 
                 auto ret = mbedtls_base64_encode(
                   (unsigned char *) b64_buffer, b64_size, &olen, src, slen);
