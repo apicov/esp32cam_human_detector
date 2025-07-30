@@ -71,16 +71,16 @@ CameraCtl::CameraCtl()
      * but maybe is best to allow the user to do it instead
      */
     ESP_ERROR_CHECK(esp_camera_init(&config));
-    gpio_set_direction(CAM_FLASH_LAMP, GPIO_MODE_OUTPUT);
+    //gpio_set_direction(CAM_FLASH_LAMP, GPIO_MODE_OUTPUT);
     ESP_LOGD(TAG, "Camera initialized");
 }
 
 
 void CameraCtl::capture_do(std::function<void(const Picture &)> f)
 {
-    gpio_set_level(CAM_FLASH_LAMP, 1);
+    //gpio_set_level(CAM_FLASH_LAMP, 1);
     Picture p{};
-    gpio_set_level(CAM_FLASH_LAMP, 0);
+    //gpio_set_level(CAM_FLASH_LAMP, 0);
     return f(p);
 }
 

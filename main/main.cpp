@@ -33,6 +33,9 @@
 // human - no human classifier
 #include "minisqueezenet_96.h"
 
+// utility functions for images
+#include "image_utils.h"
+
 // shorten CONFIG names
 #define CONF(name) CONFIG_SNAP_ ## name
 
@@ -55,6 +58,24 @@ uint8_t *tensor_arena = nullptr;
 float tflu_scale = 0.0f;
 int32_t tflu_zeropoint = 0;
 
+// sdcard
+#include "driver/sdmmc_host.h"
+#include "sdmmc_cmd.h"
+#include "esp_vfs_fat.h"
+
+
+esp_err_t initi_sd_card(const char *mount_point, sdmmc_card_t **card)
+{  
+    sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+    esp_vfs_fat_sdmmc_mount_config_t mount_config
+      = VFS_FAT_MOUNT_DEFAULT_CONFIG();
+    mount_config.allocation_unit_size = 16 * 1024;
+    
+    return esp_vfs_fat_sdmmc_mount(
+      mount_point, &host, &slot_config, &mount_config, card);
+}
+
 extern "C" void app_main()
 {
     ESP_LOGI(TAG, "Starting application...");
@@ -69,6 +90,14 @@ extern "C" void app_main()
         ret = nvs_flash_init();
     }
     ESP_ERROR_CHECK(ret);
+
+    //sdcard
+    sdmmc_card_t *card;
+    ret = initi_sd_card("/sdcard", &card);
+    if (ret != ESP_OK) {
+        ESP_LOGE("SD_CARD", "initialization failed: %s", esp_err_to_name(ret));
+        return;
+    }
 
     // WiFi
     WiFiStation::start(CONF(WIFI_SSID), CONF(WIFI_PASSWORD)).on_connect(
@@ -102,24 +131,41 @@ void camera_task(void *p)
         return;
     }
 
+    uint8_t* image_96 = (uint8_t*) malloc((96 * 96 * 3));
+    if (image_96 == NULL) {
+        ESP_LOGE(TAG, "Failed to allocate memory for encoding the image");
+        // TODO: die here...
+        return;
+    }
+
+    int cont = 0;
+    
+
     while(1)
     {
         //wait for mqtt command
         xQueueReceive(camera_evt_queue, &cmd, portMAX_DELAY);
 
         if(mqtt && mqtt->is_connected()) {
-            cam.capture_do([b64_buffer](const auto &pic){
+            cam.capture_do([b64_buffer, image_96, cont](const auto &pic){
                 auto src = pic.image();
                 auto slen = pic.size();
                 size_t olen;
+                char photo_name[50];
 
                 ESP_LOGI(TAG, "pic size: %zu", slen);
-                fmt2rgb888(pic->buf, pic->len, PIXFORMAT_JPEG, img_color);
 
-                resizeColorImage(img_color, 160, 120, img_color, 96, 96);
+                fmt2rgb888(src, slen, PIXFORMAT_JPEG, (uint8_t*)b64_buffer);
+
+                //resize_color_image((uint8_t*)b64_buffer, 160, 120, image_96, 96, 96);
+
+                sprintf(photo_name, "/sdcard/pic_%u.ppm", cont);
+                //saveAsPPM(photo_name, image_96, 96, 96);
+                saveAsPPM(photo_name, (uint8_t*)b64_buffer, 160, 120);
+    
 
                 auto ret = mbedtls_base64_encode(
-                  (unsigned char *) b64_buffer, b64_size, &olen, src, slen);
+                  (uint8_t*) b64_buffer, b64_size, &olen, image_96, image_size);
 
                 if (ret == 0) {
                   mqtt->publish(CONF(MQTT_IMG_TOPIC), b64_buffer, 2, 0);
@@ -129,6 +175,8 @@ void camera_task(void *p)
                            ", it requires a length of %zu", b64_size, olen);
                 }
             });
+
+            cont++;
         }
         else
             ESP_LOGE(TAG, "MQTT not connected");
