@@ -68,9 +68,12 @@ esp_err_t initi_sd_card(const char *mount_point, sdmmc_card_t **card)
 {  
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
-    esp_vfs_fat_sdmmc_mount_config_t mount_config
-      = VFS_FAT_MOUNT_DEFAULT_CONFIG();
-    mount_config.allocation_unit_size = 16 * 1024;
+    esp_vfs_fat_sdmmc_mount_config_t mount_config = {
+        .format_if_mount_failed = false,
+        .max_files = 5,
+        .allocation_unit_size = 16 * 1024,
+        .disk_status_check_enable = false
+    };
     
     return esp_vfs_fat_sdmmc_mount(
       mount_point, &host, &slot_config, &mount_config, card);
@@ -145,7 +148,8 @@ void camera_task(void *p)
     {
         //wait for mqtt command
         xQueueReceive(camera_evt_queue, &cmd, portMAX_DELAY);
-
+        
+        
         if(mqtt && mqtt->is_connected()) {
             cam.capture_do([b64_buffer, image_96, cont](const auto &pic){
                 auto src = pic.image();
@@ -155,17 +159,19 @@ void camera_task(void *p)
 
                 ESP_LOGI(TAG, "pic size: %zu", slen);
 
+                // Step 1: Convert JPEG to RGB888 in b64_buffer
                 fmt2rgb888(src, slen, PIXFORMAT_JPEG, (uint8_t*)b64_buffer);
 
-                //resize_color_image((uint8_t*)b64_buffer, 160, 120, image_96, 96, 96);
-
+                // Step 2: Save PPM immediately (while RGB data is still in b64_buffer)
                 sprintf(photo_name, "/sdcard/pic_%u.ppm", cont);
-                //saveAsPPM(photo_name, image_96, 96, 96);
                 saveAsPPM(photo_name, (uint8_t*)b64_buffer, 160, 120);
-    
 
+                // Step 3: Resize to 96x96 for ML processing (if needed)
+                resize_color_image_bilinear((uint8_t*)b64_buffer, 160, 120, image_96, 96, 96);
+
+                // Step 4: Now reuse b64_buffer for base64 encoding
                 auto ret = mbedtls_base64_encode(
-                  (uint8_t*) b64_buffer, b64_size, &olen, image_96, image_size);
+                  (uint8_t*) b64_buffer, b64_size, &olen, image_96, 96 * 96 * 3);
 
                 if (ret == 0) {
                   mqtt->publish(CONF(MQTT_IMG_TOPIC), b64_buffer, 2, 0);

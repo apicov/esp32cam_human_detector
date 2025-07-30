@@ -53,15 +53,15 @@ CameraCtl::CameraCtl()
       .pin_href  = CAM_PIN_HREF,
       .pin_pclk  = CAM_PIN_PCLK,
 
-      .xclk_freq_hz = CONFIG_XCLK_FREQ,
+      .xclk_freq_hz = 10000000,  // Reduced from 20MHz to 10MHz
       .ledc_timer = LEDC_TIMER_0,
       .ledc_channel = LEDC_CHANNEL_0,
 
       .pixel_format = PIXFORMAT_JPEG,
       .frame_size = FRAMESIZE_QQVGA,
 
-      .jpeg_quality = 12,
-      .fb_count = 1,
+      .jpeg_quality = 10,  // Better quality (was 12)
+      .fb_count = 2,       // Increased buffer count
       .fb_location = CAMERA_FB_IN_PSRAM,
       .grab_mode = CAMERA_GRAB_WHEN_EMPTY,
       .sccb_i2c_port = I2C_NUM_0
@@ -97,7 +97,7 @@ esp_err_t CameraCtl::camera_xclk_init(uint32_t freq_hz) {
         .deconfigure = 0,
     };
     ESP_RETURN_ON_ERROR(ledc_timer_config(&ledc_timer), TAG, "ledc_timer");
-
+/*
     // Configure the LEDC channel for XCLK pin
     ledc_channel_config_t ledc_channel = {
         .gpio_num = CAM_PIN_XCLK, // Replace with your XCLK GPIO number
@@ -111,7 +111,7 @@ esp_err_t CameraCtl::camera_xclk_init(uint32_t freq_hz) {
         .flags = { .output_invert = 1 },              // TODO: default
     };
     ESP_RETURN_ON_ERROR(ledc_channel_config(&ledc_channel), TAG, "ledc_channel");
-
+*/
     return ESP_OK;
 }
 
