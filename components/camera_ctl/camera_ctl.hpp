@@ -59,6 +59,13 @@ public:
     CameraCtl();
 
     /**
+     * @brief Check if camera was successfully initialized
+     *
+     * @return true if camera is ready, false otherwise
+     */
+    bool is_initialized() const;
+
+    /**
      * @brief Capture an image and may "do" something with it
      *
      * @param f is a "FunctionObject" that takes an image as an argument and returns "void".
@@ -66,5 +73,6 @@ public:
      */
     void capture_do(std::function<void(const Picture &)>);
 private:
+    bool initialized;
     esp_err_t camera_xclk_init(uint32_t freq_hz);
 };

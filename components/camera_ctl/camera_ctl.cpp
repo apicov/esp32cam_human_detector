@@ -1,6 +1,7 @@
 // ESP
 #include <esp_log.h>
 #include <esp_check.h>
+#include <esp_heap_caps.h>
 
 // ESP-IDF
 #include <driver/gpio.h>
@@ -33,8 +34,20 @@
 #define CONFIG_OV3660_SUPPORT 1
 #define CONFIG_OV5640_SUPPORT 1
 
-CameraCtl::CameraCtl()
+CameraCtl::CameraCtl() : initialized(false)
 {
+    // Log memory status before camera initialization
+    ESP_LOGI(TAG, "=== Memory Status Before Camera Init ===");
+    ESP_LOGI(TAG, "Free PSRAM: %zu bytes", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+    ESP_LOGI(TAG, "Largest free PSRAM block: %zu bytes", heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
+    ESP_LOGI(TAG, "Free internal RAM: %zu bytes", heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    ESP_LOGI(TAG, "Largest free internal block: %zu bytes", heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    
+    // Calculate expected memory usage for 96x96 JPEG
+    size_t jpeg_buffer_size = 96 * 96 * 3 / 2;  // Rough estimate for JPEG compression
+    ESP_LOGI(TAG, "Expected JPEG buffer size for 96x96: ~%zu bytes", jpeg_buffer_size);
+    ESP_LOGI(TAG, "Camera config: FRAMESIZE_96X96, JPEG quality 15, single buffer, DRAM location");
+
     camera_config_t config = {
       .pin_pwdn = CAM_PIN_PWDN,
       .pin_reset = CAM_PIN_RESET,
@@ -58,26 +71,39 @@ CameraCtl::CameraCtl()
       .ledc_channel = LEDC_CHANNEL_0,
 
       .pixel_format = PIXFORMAT_JPEG,
-      .frame_size = FRAMESIZE_QQVGA,
+      .frame_size = FRAMESIZE_96X96,  // Smallest available frame size
 
-      .jpeg_quality = 10,  // Better quality (was 12)
-      .fb_count = 2,       // Increased buffer count
-      .fb_location = CAMERA_FB_IN_PSRAM,
+      .jpeg_quality = 15,  // Lower quality to reduce memory usage
+      .fb_count = 1,       // Single buffer to reduce memory usage
+      .fb_location = CAMERA_FB_IN_DRAM,  // Try internal DRAM instead
       .grab_mode = CAMERA_GRAB_WHEN_EMPTY,
       .sccb_i2c_port = I2C_NUM_0
     };
 
-    /* XXX: for now abort if the camera couldn't be initialized,
-     * but maybe is best to allow the user to do it instead
-     */
-    ESP_ERROR_CHECK(esp_camera_init(&config));
-    //gpio_set_direction(CAM_FLASH_LAMP, GPIO_MODE_OUTPUT);
-    ESP_LOGD(TAG, "Camera initialized");
+    esp_err_t ret = esp_camera_init(&config);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Camera initialization failed with error 0x%x", ret);
+        ESP_LOGE(TAG, "This is likely due to insufficient PSRAM memory");
+        initialized = false;
+    } else {
+        //gpio_set_direction(CAM_FLASH_LAMP, GPIO_MODE_OUTPUT);
+        ESP_LOGI(TAG, "Camera initialized successfully");
+        initialized = true;
+    }
 }
 
 
+bool CameraCtl::is_initialized() const
+{
+    return initialized;
+}
+
 void CameraCtl::capture_do(std::function<void(const Picture &)> f)
 {
+    if (!initialized) {
+        ESP_LOGE(TAG, "Camera not initialized, cannot capture");
+        return;
+    }
     //gpio_set_level(CAM_FLASH_LAMP, 1);
     Picture p{};
     //gpio_set_level(CAM_FLASH_LAMP, 0);
