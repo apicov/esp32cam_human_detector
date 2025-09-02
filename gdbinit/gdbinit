@@ -1,0 +1,2 @@
+source /home/pico/code/esp32cam_human_detector/gdbinit/symbols
+source /home/pico/code/esp32cam_human_detector/gdbinit/connect

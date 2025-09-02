@@ -1,4 +1,5 @@
 #include "image_utils.h"
+#include <unistd.h>
 
 
 void resize_color_image(uint8_t *src, int srcWidth, int srcHeight, 
@@ -104,4 +105,48 @@ void saveAsPPM(const char *filename, uint8_t *image, int width, int height) {
     fclose(file);
 
     ESP_LOGI("PPM", "PPM image saved successfully: %s", filename);
+}
+
+bool saveAsPPMEx(const char *filename, const uint8_t *image, int width, int height,
+                 bool swap_rb, bool flip_vertical) {
+    FILE *file = fopen(filename, "wb");
+    if (!file) {
+        ESP_LOGE("PPM","Failed to open file: %s", filename);
+        return false;
+    }
+
+    fprintf(file, "P6\n%d %d\n255\n", width, height);
+
+    const int row_bytes = width * 3;
+    const uint8_t *src = image;
+    for (int y = 0; y < height; ++y) {
+        int src_y = flip_vertical ? (height - 1 - y) : y;
+        const uint8_t *row = src + src_y * row_bytes;
+        if (!swap_rb) {
+            if (fwrite(row, 1, row_bytes, file) != (size_t)row_bytes) {
+                ESP_LOGE("PPM","Error writing image data to file");
+                fclose(file);
+                return false;
+            }
+        } else {
+            // Write with channel swap into a small stack buffer line-by-line
+            for (int x = 0; x < width; ++x) {
+                uint8_t r = row[x * 3 + 0];
+                uint8_t g = row[x * 3 + 1];
+                uint8_t b = row[x * 3 + 2];
+                uint8_t trio[3] = { b, g, r };
+                if (fwrite(trio, 1, 3, file) != 3) {
+                    ESP_LOGE("PPM","Error writing image data to file");
+                    fclose(file);
+                    return false;
+                }
+            }
+        }
+    }
+
+    fflush(file);
+    fsync(fileno(file));
+    fclose(file);
+    ESP_LOGI("PPM", "PPM image saved successfully: %s", filename);
+    return true;
 }

@@ -2,94 +2,75 @@
 #include <esp_log.h>
 #include <esp_check.h>
 #include <esp_heap_caps.h>
-
-// ESP-IDF
-#include <driver/gpio.h>
-#include <driver/i2c.h>
-
 #include "camera_ctl.hpp"
-
-#define CAM_PIN_PWDN    32
-#define CAM_PIN_RESET   -1 //software reset will be performed
-#define CAM_PIN_XCLK    0
-#define CAM_PIN_SIOD    26
-#define CAM_PIN_SIOC    27
-
-#define CAM_PIN_D7      35
-#define CAM_PIN_D6      34
-#define CAM_PIN_D5      39
-#define CAM_PIN_D4      36
-#define CAM_PIN_D3      21
-#define CAM_PIN_D2      19
-#define CAM_PIN_D1      18
-#define CAM_PIN_D0       5
-#define CAM_PIN_VSYNC   25
-#define CAM_PIN_HREF    23
-#define CAM_PIN_PCLK    22
-#define CAM_FLASH_LAMP  GPIO_NUM_4
-
-#define CONFIG_XCLK_FREQ 20'000'000
-#define CONFIG_OV2640_SUPPORT 1
-#define CONFIG_OV7725_SUPPORT 1
-#define CONFIG_OV3660_SUPPORT 1
-#define CONFIG_OV5640_SUPPORT 1
+#if CONFIG_SNAP_SINGLE_SHOT_LL_DVP
+#include "single_shot_camera.h"
+#include "ll_cam_dvp.h"
+#else
+#include "esp_camera.h"
+#include "img_converters.h"
+#endif
 
 CameraCtl::CameraCtl() : initialized(false)
 {
-    // Log memory status before camera initialization
-    ESP_LOGI(TAG, "=== Memory Status Before Camera Init ===");
+    ESP_LOGI(TAG, "=== Initializing Camera ===");
     ESP_LOGI(TAG, "Free PSRAM: %zu bytes", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
-    ESP_LOGI(TAG, "Largest free PSRAM block: %zu bytes", heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM));
     ESP_LOGI(TAG, "Free internal RAM: %zu bytes", heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
-    ESP_LOGI(TAG, "Largest free internal block: %zu bytes", heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
-    
-    // Calculate expected memory usage for 96x96 JPEG
-    size_t jpeg_buffer_size = 96 * 96 * 3 / 2;  // Rough estimate for JPEG compression
-    ESP_LOGI(TAG, "Expected JPEG buffer size for 96x96: ~%zu bytes", jpeg_buffer_size);
-    ESP_LOGI(TAG, "Camera config: FRAMESIZE_96X96, JPEG quality 15, single buffer, DRAM location");
 
-    camera_config_t config = {
-      .pin_pwdn = CAM_PIN_PWDN,
-      .pin_reset = CAM_PIN_RESET,
-      .pin_xclk = CAM_PIN_XCLK,
-      .pin_sccb_sda = CAM_PIN_SIOD,
-      .pin_sccb_scl = CAM_PIN_SIOC,
-      .pin_d7 = CAM_PIN_D7,
-      .pin_d6 = CAM_PIN_D6,
-      .pin_d5 = CAM_PIN_D5,
-      .pin_d4 = CAM_PIN_D4,
-      .pin_d3 = CAM_PIN_D3,
-      .pin_d2 = CAM_PIN_D2,
-      .pin_d1 = CAM_PIN_D1,
-      .pin_d0 = CAM_PIN_D0,
-      .pin_vsync = CAM_PIN_VSYNC,
-      .pin_href  = CAM_PIN_HREF,
-      .pin_pclk  = CAM_PIN_PCLK,
-
-      .xclk_freq_hz = 10000000,  // Reduced from 20MHz to 10MHz
-      .ledc_timer = LEDC_TIMER_0,
-      .ledc_channel = LEDC_CHANNEL_0,
-
-      .pixel_format = PIXFORMAT_JPEG,
-      .frame_size = FRAMESIZE_96X96,  // Smallest available frame size
-
-      .jpeg_quality = 15,  // Lower quality to reduce memory usage
-      .fb_count = 1,       // Single buffer to reduce memory usage
-      .fb_location = CAMERA_FB_IN_DRAM,  // Try internal DRAM instead
-      .grab_mode = CAMERA_GRAB_WHEN_EMPTY,
-      .sccb_i2c_port = I2C_NUM_0
-    };
-
-    esp_err_t ret = esp_camera_init(&config);
+#if CONFIG_SNAP_SINGLE_SHOT_LL_DVP
+    single_shot_config_t cfg = SINGLE_SHOT_CONFIG_DEFAULT();
+    // Use 20MHz XCLK for stability similar to esp_camera path
+    cfg.xclk_freq = 20000000;
+    esp_err_t ret = single_shot_camera_init(&cfg);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Camera initialization failed with error 0x%x", ret);
-        ESP_LOGE(TAG, "This is likely due to insufficient PSRAM memory");
+        ESP_LOGE(TAG, "Single-shot camera init failed: %s", esp_err_to_name(ret));
         initialized = false;
     } else {
-        //gpio_set_direction(CAM_FLASH_LAMP, GPIO_MODE_OUTPUT);
-        ESP_LOGI(TAG, "Camera initialized successfully");
+        ESP_LOGI(TAG, "Single-shot camera initialized");
         initialized = true;
     }
+#else
+    // ESP32-CAM pin configuration
+    camera_config_t config = {
+        .pin_pwdn = 32,
+        .pin_reset = -1,
+        .pin_xclk = 0,
+        .pin_sccb_sda = 26,
+        .pin_sccb_scl = 27,
+        .pin_d7 = 35,
+        .pin_d6 = 34,
+        .pin_d5 = 39,
+        .pin_d4 = 36,
+        .pin_d3 = 21,
+        .pin_d2 = 19,
+        .pin_d1 = 18,
+        .pin_d0 = 5,
+        .pin_vsync = 25,
+        .pin_href = 23,
+        .pin_pclk = 22,
+        
+        .xclk_freq_hz = 20000000,
+        .ledc_timer = LEDC_TIMER_0,
+        .ledc_channel = LEDC_CHANNEL_0,
+        
+        .pixel_format = PIXFORMAT_RGB565,
+        .frame_size = FRAMESIZE_96X96,
+        
+        .jpeg_quality = 12,
+        .fb_count = 1,
+        .fb_location = CAMERA_FB_IN_PSRAM,
+        .grab_mode = CAMERA_GRAB_LATEST
+    };
+    
+    esp_err_t ret = esp_camera_init(&config);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "ESP32-Camera initialization failed: %s", esp_err_to_name(ret));
+        initialized = false;
+    } else {
+        ESP_LOGI(TAG, "ESP32-Camera initialized successfully");
+        initialized = true;
+    }
+#endif
 }
 
 
@@ -104,62 +85,138 @@ void CameraCtl::capture_do(std::function<void(const Picture &)> f)
         ESP_LOGE(TAG, "Camera not initialized, cannot capture");
         return;
     }
-    //gpio_set_level(CAM_FLASH_LAMP, 1);
-    Picture p{};
-    //gpio_set_level(CAM_FLASH_LAMP, 0);
-    return f(p);
+    
+    Picture p{};  // Constructor captures one frame (LL-DVP when enabled)
+    
+    // Check if capture was successful
+    if (p.image() == nullptr) {
+        ESP_LOGE(TAG, "Camera capture failed - RGB data is null");
+        return;
+    }
+    
+    f(p);
+    // Destructor will free the RGB data
 }
 
 
-esp_err_t CameraCtl::camera_xclk_init(uint32_t freq_hz) {
 
-    // Configure the LEDC timer
-    ledc_timer_config_t ledc_timer = {
-        .speed_mode = LEDC_HIGH_SPEED_MODE,  // High-speed mode
-        .duty_resolution = LEDC_TIMER_1_BIT, // Minimal duty resolution for clock
-        .timer_num = LEDC_TIMER_0,           // Use LEDC_TIMER_0
-        .freq_hz = freq_hz,                  // Set the desired frequency
-        .clk_cfg = LEDC_AUTO_CLK,            // Automatically select clock source
-        .deconfigure = 0,
-    };
-    ESP_RETURN_ON_ERROR(ledc_timer_config(&ledc_timer), TAG, "ledc_timer");
-/*
-    // Configure the LEDC channel for XCLK pin
-    ledc_channel_config_t ledc_channel = {
-        .gpio_num = CAM_PIN_XCLK, // Replace with your XCLK GPIO number
-        .speed_mode = LEDC_HIGH_SPEED_MODE,
-        .channel = LEDC_CHANNEL_0,
-        .intr_type = LEDC_INTR_DISABLE,               // TODO: default
-        .timer_sel = LEDC_TIMER_0,
-        .duty = 1, // Minimal duty cycle for clock generation
-        .hpoint = 0,
-        .sleep_mode = LEDC_SLEEP_MODE_NO_ALIVE_NO_PD, // TODO: default
-        .flags = { .output_invert = 1 },              // TODO: default
-    };
-    ESP_RETURN_ON_ERROR(ledc_channel_config(&ledc_channel), TAG, "ledc_channel");
-*/
-    return ESP_OK;
-}
 
 /* CameraCtl::Picture */
 /* ================== */
-CameraCtl::Picture::Picture() : fb{esp_camera_fb_get()}
+CameraCtl::Picture::Picture() : rgb_data(nullptr), owns_data(false)
 {
-    ESP_LOGI(TAG, "Snapshot taken");
+#if CONFIG_SNAP_SINGLE_SHOT_LL_DVP
+    ESP_LOGI(TAG, "Capturing frame (single-shot LL-DVP)...");
+
+    // Capture RGB565 raw data first, then convert to RGB888
+    const int width = 96;
+    const int height = 96;
+    const size_t rgb565_size = width * height * 2;
+    uint8_t* rgb565 = (uint8_t*)malloc(rgb565_size);
+    if (!rgb565) {
+        ESP_LOGE(TAG, "Failed to allocate RGB565 buffer");
+        return;
+    }
+
+    esp_err_t cap = ll_cam_dvp_capture(rgb565, 3000);
+    if (cap != ESP_OK) {
+        ESP_LOGE(TAG, "LL-DVP capture failed: %s", esp_err_to_name(cap));
+        free(rgb565);
+        return;
+    }
+
+    rgb_data = (uint8_t*)malloc(width * height * 3);
+    if (!rgb_data) {
+        ESP_LOGE(TAG, "Failed to allocate RGB888 buffer");
+        free(rgb565);
+        return;
+    }
+
+    convert_rgb565_to_rgb888(rgb565, rgb_data, width, height);
+    owns_data = true;
+    free(rgb565);
+#else
+    ESP_LOGI(TAG, "Capturing frame using ESP32-Camera...");
+    
+    // Capture frame using ESP32-Camera driver
+    fb = esp_camera_fb_get();
+    
+    if (fb != nullptr) {
+        ESP_LOGI(TAG, "Frame captured: %dx%d, format=%d, len=%zu", 
+                 fb->width, fb->height, fb->format, fb->len);
+        
+        if (fb->format == PIXFORMAT_RGB565 || fb->format == PIXFORMAT_YUV422 || fb->format == PIXFORMAT_GRAYSCALE) {
+            // Convert to RGB888 using esp32-camera's img_converters
+            rgb_data = (uint8_t*)malloc(fb->width * fb->height * 3);
+            if (rgb_data) {
+                if (!fmt2rgb888(fb->buf, fb->len, (pixformat_t)fb->format, rgb_data)) {
+                    ESP_LOGE(TAG, "fmt2rgb888 failed (format=%d)", fb->format);
+                    free(rgb_data);
+                    rgb_data = nullptr;
+                } else {
+                    owns_data = true;
+                    ESP_LOGI(TAG, "fmt2rgb888 conversion complete");
+                }
+            } else {
+                ESP_LOGE(TAG, "Failed to allocate RGB888 buffer");
+            }
+        } else {
+            ESP_LOGW(TAG, "Unexpected pixel format: %d", fb->format);
+        }
+    } else {
+        ESP_LOGE(TAG, "Camera capture failed - no framebuffer");
+    }
+#endif
 }
 
 CameraCtl::Picture::~Picture()
 {
-    ESP_LOGD(TAG, "Release the snapshot's framebuffer");
-    esp_camera_fb_return(fb);
+    if (rgb_data && owns_data) {
+        free(rgb_data);
+        ESP_LOGD(TAG, "Freed RGB888 conversion buffer");
+    }
+
+#if !CONFIG_SNAP_SINGLE_SHOT_LL_DVP
+    if (fb) {
+        esp_camera_fb_return(fb);
+        ESP_LOGD(TAG, "Returned camera framebuffer");
+    }
+#endif
 }
 
 const uint8_t *CameraCtl::Picture::image() const
 {
-    return fb->buf;
+    return rgb_data;  // Return RGB888 data for ML
 }
 
 size_t CameraCtl::Picture::size() const
 {
-    return fb->len;
+    return rgb_data ? (96 * 96 * 3) : 0;  // RGB888 format
+}
+
+uint16_t CameraCtl::Picture::width() const
+{
+    return fb ? fb->width : 0;
+}
+
+uint16_t CameraCtl::Picture::height() const
+{
+    return fb ? fb->height : 0;
+}
+
+// Helper function to convert RGB565 to RGB888
+void CameraCtl::Picture::convert_rgb565_to_rgb888(const uint8_t* rgb565, uint8_t* rgb888, int width, int height) {
+    for (int i = 0; i < width * height; i++) {
+        uint16_t pixel = (rgb565[i*2 + 1] << 8) | rgb565[i*2];  // Little endian
+        
+        // Extract RGB565 components
+        uint8_t r = (pixel >> 11) & 0x1F;  // 5 bits
+        uint8_t g = (pixel >> 5) & 0x3F;   // 6 bits  
+        uint8_t b = pixel & 0x1F;          // 5 bits
+        
+        // Convert to RGB888
+        rgb888[i*3 + 0] = (r << 3) | (r >> 2);  // R: 5->8 bits
+        rgb888[i*3 + 1] = (g << 2) | (g >> 4);  // G: 6->8 bits
+        rgb888[i*3 + 2] = (b << 3) | (b >> 2);  // B: 5->8 bits
+    }
 }

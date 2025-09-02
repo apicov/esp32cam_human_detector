@@ -32,9 +32,9 @@ if(NOT DEFINED CMAKE_CROSSCOMPILING)
   set(CMAKE_CROSSCOMPILING "TRUE")
 endif()
 
-# Set default install directory permissions.
+# Set path to fallback-tool for dependency-resolution.
 if(NOT DEFINED CMAKE_OBJDUMP)
-  set(CMAKE_OBJDUMP "/home/pico/.espressif/tools/xtensa-esp-elf/esp-13.2.0_20230928/xtensa-esp-elf/bin/xtensa-esp32-elf-objdump")
+  set(CMAKE_OBJDUMP "/home/pico/.espressif/tools/xtensa-esp-elf/esp-14.2.0_20241119/xtensa-esp-elf/bin/xtensa-esp32-elf-objdump")
 endif()
 
 if(CMAKE_INSTALL_COMPONENT STREQUAL "Unspecified" OR NOT CMAKE_INSTALL_COMPONENT)
@@ -45,6 +45,7 @@ if(CMAKE_INSTALL_COMPONENT STREQUAL "Unspecified" OR NOT CMAKE_INSTALL_COMPONENT
     "/home/pico/esp/esp-idf/components/mbedtls/mbedtls/include/mbedtls/asn1write.h"
     "/home/pico/esp/esp-idf/components/mbedtls/mbedtls/include/mbedtls/base64.h"
     "/home/pico/esp/esp-idf/components/mbedtls/mbedtls/include/mbedtls/bignum.h"
+    "/home/pico/esp/esp-idf/components/mbedtls/mbedtls/include/mbedtls/block_cipher.h"
     "/home/pico/esp/esp-idf/components/mbedtls/mbedtls/include/mbedtls/build_info.h"
     "/home/pico/esp/esp-idf/components/mbedtls/mbedtls/include/mbedtls/camellia.h"
     "/home/pico/esp/esp-idf/components/mbedtls/mbedtls/include/mbedtls/ccm.h"
@@ -120,6 +121,7 @@ if(CMAKE_INSTALL_COMPONENT STREQUAL "Unspecified" OR NOT CMAKE_INSTALL_COMPONENT
     "/home/pico/esp/esp-idf/components/mbedtls/mbedtls/include/psa/build_info.h"
     "/home/pico/esp/esp-idf/components/mbedtls/mbedtls/include/psa/crypto.h"
     "/home/pico/esp/esp-idf/components/mbedtls/mbedtls/include/psa/crypto_adjust_auto_enabled.h"
+    "/home/pico/esp/esp-idf/components/mbedtls/mbedtls/include/psa/crypto_adjust_config_dependencies.h"
     "/home/pico/esp/esp-idf/components/mbedtls/mbedtls/include/psa/crypto_adjust_config_key_pair_types.h"
     "/home/pico/esp/esp-idf/components/mbedtls/mbedtls/include/psa/crypto_adjust_config_synonyms.h"
     "/home/pico/esp/esp-idf/components/mbedtls/mbedtls/include/psa/crypto_builtin_composites.h"
@@ -142,3 +144,9 @@ if(CMAKE_INSTALL_COMPONENT STREQUAL "Unspecified" OR NOT CMAKE_INSTALL_COMPONENT
     )
 endif()
 
+string(REPLACE ";" "\n" CMAKE_INSTALL_MANIFEST_CONTENT
+       "${CMAKE_INSTALL_MANIFEST_FILES}")
+if(CMAKE_INSTALL_LOCAL_ONLY)
+  file(WRITE "/home/pico/code/esp32cam_human_detector/esp-idf/mbedtls/mbedtls/include/install_local_manifest.txt"
+     "${CMAKE_INSTALL_MANIFEST_CONTENT}")
+endif()

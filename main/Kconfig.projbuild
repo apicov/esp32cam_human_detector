@@ -28,4 +28,11 @@ config SNAP_MQTT_IMG_TOPIC
        help
            The MQTT topic to use for passing the snapshots.
 
+config SNAP_SINGLE_SHOT_LL_DVP
+       bool "Use single-shot LL-DVP capture (experimental)"
+       default n
+       help
+           Enable experimental single-shot capture path using low-level DVP + I2S DMA.
+           When disabled, the standard esp32-camera driver is used.
+
 endmenu

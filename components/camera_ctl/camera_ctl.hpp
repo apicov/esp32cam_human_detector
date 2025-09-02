@@ -2,11 +2,23 @@
 
 #include <functional>
 
-#include "esp_camera.h"
 #include "esp_err.h"
+// Required for build-time feature flags
+#include "sdkconfig.h"
+
+// Forward declare esp_camera types when using legacy driver path
+#ifdef __cplusplus
+extern "C" {
+#endif
+#if !CONFIG_SNAP_SINGLE_SHOT_LL_DVP
+#include "esp_camera.h"
+#endif
+#ifdef __cplusplus
+}
+#endif
 
 /**
- * @brief Thin wrapper around "esp32_camera" to simplify its usage
+ * @brief Camera control using single-shot power-efficient capture
  *
  */
 class CameraCtl
@@ -18,30 +30,43 @@ public:
      */
     struct Picture
     {
-        /* XXX: Pictures can only be taken through the CameraCtl,
-         * because only one picture can be taken at the time, if
-         * multiple instance are created then problems with the framebuffer
-         * may occur. Probably one solution to this, is to release the
-         * framebuffer every time a new instance is created and document
-         * this behavior, and let the user to assume the responsability.
-         */
         friend CameraCtl;
 
         /**
-         * @brief: Returns a non-modifiable pointer to the picture's buffer.
+         * @brief: Returns a non-modifiable pointer to the RGB888 image buffer (96x96x3 bytes).
          *
          */
         const uint8_t* image() const;
+        
         /**
-         * @brief: return the size of the picture's buffer.
+         * @brief: return the size of the RGB888 buffer (always 96*96*3 = 27,648 bytes).
          *
          */
         size_t size() const;
 
+        /**
+         * @brief: return the width of the image (always 96).
+         */
+        uint16_t width() const;
+        
+        /**
+         * @brief: return the height of the image (always 96).
+         */
+        uint16_t height() const;
+
     private:
         Picture();
         ~Picture();
-        camera_fb_t *fb;
+        uint8_t* rgb_data;  // RGB888 data from single-shot camera
+        bool owns_data;     // True if we need to free the data ourselves
+
+        // When using legacy esp32-camera path, we keep the framebuffer to return later
+#if !CONFIG_SNAP_SINGLE_SHOT_LL_DVP
+        camera_fb_t* fb;
+#endif
+
+        // Helper to convert RGB565 buffer to RGB888
+        static void convert_rgb565_to_rgb888(const uint8_t* rgb565, uint8_t* rgb888, int width, int height);
     };
 
     /**
@@ -74,5 +99,4 @@ public:
     void capture_do(std::function<void(const Picture &)>);
 private:
     bool initialized;
-    esp_err_t camera_xclk_init(uint32_t freq_hz);
 };

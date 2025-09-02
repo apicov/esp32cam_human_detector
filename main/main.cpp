@@ -5,6 +5,7 @@
 #include <esp_system.h>
 #include <esp_log.h>
 #include <esp_heap_caps.h>
+#include <esp_task_wdt.h>
 
 // FreeRTOS
 #include <freertos/FreeRTOS.h>
@@ -47,13 +48,14 @@ bool run_inference(uint8_t* rgb_image);
 const char *TAG = "main";
 MQTTClient *mqtt = nullptr;
 QueueHandle_t camera_evt_queue = nullptr;  // FreeRTOS queue for camera trigger events
+static bool g_sd_mounted = false;
 
 //tf lite micro
 const tflite::Model* tflu_model = nullptr;
 tflite::MicroInterpreter* tflu_interpreter = nullptr;
 TfLiteTensor* tflu_i_tensor = nullptr;
 TfLiteTensor* tflu_o_tensor = nullptr;
-constexpr int tensor_arena_size = 80000;  // 80KB - allocate more for quantized model working memory
+constexpr int tensor_arena_size = 750000;  // 750KB - needed for the model based on AllocateTensors error
 uint8_t *tensor_arena = nullptr;
 float tflu_scale = 0.0f;
 int32_t tflu_zeropoint = 0;
@@ -67,9 +69,21 @@ int32_t tflu_zeropoint = 0;
 esp_err_t initi_sd_card(const char *mount_point, sdmmc_card_t **card)
 {  
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
+    // Lower SD clock to improve stability on AI-Thinker wiring
+    host.max_freq_khz = 10000; // 10 MHz
     sdmmc_slot_config_t slot_config = SDMMC_SLOT_CONFIG_DEFAULT();
+    // AI-Thinker ESP32-CAM: use 1-bit bus to avoid GPIO4 conflict (flash LED)
+    slot_config.width = 1;             // use CMD=15, CLK=14, D0=2 only
+    slot_config.clk = GPIO_NUM_14;
+    slot_config.cmd = GPIO_NUM_15;
+    slot_config.d0  = GPIO_NUM_2;
+    // Enable internal pull-ups on required lines (weak but helps on AI-Thinker)
+    gpio_set_pull_mode(GPIO_NUM_15, GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode(GPIO_NUM_2, GPIO_PULLUP_ONLY);
+    // Optional: GPIO4 not used in 1-bit, but keep pulled up
+    gpio_set_pull_mode(GPIO_NUM_4, GPIO_PULLUP_ONLY);
     esp_vfs_fat_sdmmc_mount_config_t mount_config = {
-        .format_if_mount_failed = false,
+        .format_if_mount_failed = true,
         .max_files = 5,
         .allocation_unit_size = 16 * 1024,
         .disk_status_check_enable = false
@@ -95,12 +109,9 @@ void init_tensorflow_model()
         return;
     }
     
-    // Try internal DRAM first, then PSRAM
-    tensor_arena = (uint8_t*) heap_caps_malloc(tensor_arena_size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
-    if (tensor_arena == nullptr) {
-        ESP_LOGW(TAG, "Failed to allocate tensor arena in DRAM, trying PSRAM");
-        tensor_arena = (uint8_t*) heap_caps_malloc(tensor_arena_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    }
+    // Allocate tensor arena directly in PSRAM for large models
+    tensor_arena = (uint8_t*) heap_caps_malloc(tensor_arena_size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    ESP_LOGI(TAG, "Allocated tensor arena in PSRAM");
     if (tensor_arena == nullptr) {
         ESP_LOGE(TAG, "Failed to allocate tensor arena");
         return;
@@ -155,9 +166,22 @@ extern "C" void app_main()
     ESP_LOGI(TAG, "Starting application...");
     
     // Log initial memory state
-    ESP_LOGI(TAG, "=== Initial Memory Status ===");
+    ESP_LOGI(TAG, "=== Memory Diagnosis ===");
+    ESP_LOGI(TAG, "Total PSRAM: %zu bytes", heap_caps_get_total_size(MALLOC_CAP_SPIRAM));
     ESP_LOGI(TAG, "Free PSRAM: %zu bytes", heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
     ESP_LOGI(TAG, "Free internal RAM: %zu bytes", heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    
+    if (heap_caps_get_total_size(MALLOC_CAP_SPIRAM) == 0) {
+        ESP_LOGE(TAG, "PSRAM NOT DETECTED!");
+        ESP_LOGE(TAG, "Possible causes:");
+        ESP_LOGE(TAG, "1. Wrong board - not ESP32-CAM with PSRAM");
+        ESP_LOGE(TAG, "2. PSRAM hardware failure");
+        ESP_LOGE(TAG, "3. Wrong GPIO configuration for PSRAM");
+        ESP_LOGE(TAG, "4. Bootloader built without PSRAM support");
+        ESP_LOGE(TAG, "Your SqueezeNet model needs PSRAM to work!");
+    } else {
+        ESP_LOGI(TAG, "PSRAM detected: %zu MB", heap_caps_get_total_size(MALLOC_CAP_SPIRAM) / 1024 / 1024);
+    }
 
     // gpio
     gpio_set_direction(GPIO_NUM_33, GPIO_MODE_OUTPUT);
@@ -171,12 +195,27 @@ extern "C" void app_main()
     }
     ESP_ERROR_CHECK(ret);
 
-    //sdcard
+    // SD card (1-bit SDMMC mode)
     sdmmc_card_t *card;
     ret = initi_sd_card("/sdcard", &card);
     if (ret != ESP_OK) {
-        ESP_LOGE("SD_CARD", "initialization failed: %s", esp_err_to_name(ret));
-        return;
+        ESP_LOGW("SD_CARD", "Initialization failed: %s (continuing without SD)", esp_err_to_name(ret));
+        g_sd_mounted = false;
+    } else {
+        sdmmc_card_print_info(stdout, card);
+        g_sd_mounted = true;
+        // Simple health check file
+        FILE *f = fopen("/sdcard/TEST.TXT", "wb");
+        if (f) {
+            const char *msg = "sd ok\n";
+            fwrite(msg, 1, 5, f);
+            fflush(f);
+            fsync(fileno(f));
+            fclose(f);
+            ESP_LOGI("SD_CARD", "Wrote /sdcard/TEST.TXT");
+        } else {
+            ESP_LOGW("SD_CARD", "Failed to create /sdcard/TEST.TXT");
+        }
     }
 
     // WiFi
@@ -190,8 +229,17 @@ extern "C" void app_main()
     // Initialize TensorFlow Lite model
     init_tensorflow_model();
     
+    // Increase Task WDT timeout to tolerate ML inference bursts (ESP-IDF v5 API)
+    esp_task_wdt_deinit();
+    esp_task_wdt_config_t wdt_cfg = {
+        .timeout_ms = 15000,
+        .idle_core_mask = 0, // don't monitor IDLE tasks; only registered tasks
+        .trigger_panic = true
+    };
+    esp_task_wdt_init(&wdt_cfg);
+
     // tasks
-    xTaskCreate(camera_task, "camera", 4096, NULL, 5, NULL);
+    xTaskCreatePinnedToCore(camera_task, "camera", 8192, NULL, 5, NULL, 1);  // Pin to core 1; Wi-Fi uses core 0
 
     ESP_LOGI(TAG, "esp32cam_snap is running");
 } // end of app_main
@@ -242,6 +290,9 @@ bool run_inference(uint8_t* rgb_image)
 
 void camera_task(void *p)
 {
+    // Register this task to the Task WDT so esp_task_wdt_reset() works
+    esp_task_wdt_add(NULL);
+    // Run on core 0; ensure we yield periodically during long ops
     CameraCtl cam{};
     uint8_t cmd;
 
@@ -250,21 +301,28 @@ void camera_task(void *p)
     constexpr size_t image_size{160 * 120 * 3};
     constexpr size_t b64_size{(4 * ((image_size + 2) / 3)) + 1};
 
-    // Allocate image buffers in internal DRAM to preserve PSRAM
-    char* b64_buffer = (char*) heap_caps_malloc(b64_size, MALLOC_CAP_INTERNAL);
+    // Allocate b64_buffer in PSRAM since it's large (76KB)
+    char* b64_buffer = (char*) heap_caps_malloc(b64_size, MALLOC_CAP_SPIRAM);
     if (b64_buffer == NULL) {
-        ESP_LOGE(TAG, "Failed to allocate b64_buffer (%zu bytes) in internal RAM", b64_size);
+        ESP_LOGE(TAG, "Failed to allocate b64_buffer (%zu bytes) in PSRAM", b64_size);
         return;
     }
-    ESP_LOGI(TAG, "Allocated b64_buffer: %zu bytes in internal RAM", b64_size);
+    ESP_LOGI(TAG, "Allocated b64_buffer: %zu bytes in PSRAM", b64_size);
 
+    // Try internal RAM first, then PSRAM
     uint8_t* image_96 = (uint8_t*) heap_caps_malloc(96 * 96 * 3, MALLOC_CAP_INTERNAL);
     if (image_96 == NULL) {
-        ESP_LOGE(TAG, "Failed to allocate image_96 (%d bytes) in internal RAM", 96 * 96 * 3);
-        free(b64_buffer);
-        return;
+        ESP_LOGW(TAG, "Failed to allocate image_96 in internal RAM, trying PSRAM");
+        image_96 = (uint8_t*) heap_caps_malloc(96 * 96 * 3, MALLOC_CAP_SPIRAM);
+        if (image_96 == NULL) {
+            ESP_LOGE(TAG, "Failed to allocate image_96 (%d bytes) even in PSRAM", 96 * 96 * 3);
+            free(b64_buffer);
+            return;
+        }
+        ESP_LOGI(TAG, "Allocated image_96 in PSRAM");
+    } else {
+        ESP_LOGI(TAG, "Allocated image_96 in internal RAM");
     }
-    ESP_LOGI(TAG, "Allocated image_96: %d bytes in internal RAM", 96 * 96 * 3);
 
     int cont = 0;
     
@@ -272,48 +330,65 @@ void camera_task(void *p)
     while(1)
     {
         //wait for mqtt command
-        xQueueReceive(camera_evt_queue, &cmd, portMAX_DELAY);
+        //xQueueReceive(camera_evt_queue, &cmd, portMAX_DELAY);
         
         
-        if(mqtt && mqtt->is_connected()) {
+        //if(mqtt && mqtt->is_connected()) {
+        if(1) {
             cam.capture_do([b64_buffer, image_96, cont](const auto &pic){
                 auto src = pic.image();
                 auto slen = pic.size();
+
+                ESP_LOGI(TAG, "RGB data size: %zu bytes (should be %d for 96x96x3)", slen, 96*96*3);
+
+                // Single-shot camera already provides RGB888 96x96 data - no conversion needed!
+                if (src != nullptr) {
+                    // Copy RGB data directly to our ML buffer
+                    memcpy(image_96, src, 96 * 96 * 3);
+
+                    // Save to SD card if mounted
+                    if (g_sd_mounted) {
+                        char path[64];
+                        // Use 8.3 filename to work with FATFS LFN disabled
+                        snprintf(path, sizeof(path), "/sdcard/SN%06d.PPM", cont);
+                        // Save final: swap R/B, no vertical flip (validated by test B)
+                        snprintf(path, sizeof(path), "/sdcard/S%05d.PPM", cont % 100000);
+                        saveAsPPMEx(path, image_96, 96, 96, true, false);
+                    } else {
+                        ESP_LOGW(TAG, "SD not mounted - skipping save");
+                    }
+                    
+                    // Run inference to detect human
+                    // For long inference, temporarily unregister this task from WDT
+                    esp_task_wdt_delete(NULL);
+                    bool human_detected = run_inference(image_96);
+                    // Re-register after inference and feed once
+                    esp_task_wdt_add(NULL);
+                    esp_task_wdt_reset();
+                    vTaskDelay(1);
+                    
+                    // Control GPIO 33 based on detection
+                    gpio_set_level(GPIO_NUM_33, human_detected ? 1 : 0);
+                    ESP_LOGI(TAG, "Human %s - LED %s", 
+                             human_detected ? "DETECTED" : "not detected",
+                             human_detected ? "ON" : "OFF");
+                    // Saved above
+                } else {
+                    ESP_LOGE(TAG, "Failed to capture image - RGB data is null");
+                }
+
+                // Optional: Base64 encode and publish via MQTT (currently disabled)
+                /*
                 size_t olen;
-                char photo_name[50];
-
-                ESP_LOGI(TAG, "pic size: %zu", slen);
-
-                // Step 1: Convert JPEG to RGB888 in b64_buffer
-                fmt2rgb888(src, slen, PIXFORMAT_JPEG, (uint8_t*)image_96);
-
-                // Step 2: Save PPM immediately (while RGB data is still in b64_buffer)
-                //sprintf(photo_name, "/sdcard/pic_%u.ppm", cont);
-                //saveAsPPM(photo_name, (uint8_t*)b64_buffer, 160, 120);
-
-                // Step 3: Resize to 96x96 for ML processing
-                //resize_color_image_bilinear((uint8_t*)b64_buffer, 160, 120, image_96, 96, 96);
-                
-                // Step 4: Run inference to detect human
-                bool human_detected = run_inference(image_96);
-                
-                // Step 5: Control GPIO 33 based on detection
-                gpio_set_level(GPIO_NUM_33, human_detected ? 1 : 0);
-                ESP_LOGI(TAG, "Human %s - LED %s", 
-                         human_detected ? "DETECTED" : "not detected",
-                         human_detected ? "ON" : "OFF");
-
-                // Step 6: Now reuse b64_buffer for base64 encoding
                 auto ret = mbedtls_base64_encode(
-                  (uint8_t*) b64_buffer, b64_size, &olen, image_96, 96 * 96 * 3);
+                    (uint8_t*) b64_buffer, b64_size, &olen, image_96, 96 * 96 * 3);
 
                 if (ret == 0) {
-                  mqtt->publish(CONF(MQTT_IMG_TOPIC), b64_buffer, 2, 0);
-                }
-                else {
+                    mqtt->publish(CONF(MQTT_IMG_TOPIC), b64_buffer, 2, 0);
+                } else {
                   ESP_LOGE(TAG, "the dest buffer is too small (%zu)"
                            ", it requires a length of %zu", b64_size, olen);
-                }
+                }*/
             });
 
             cont++;
@@ -321,7 +396,7 @@ void camera_task(void *p)
         else
             ESP_LOGE(TAG, "MQTT not connected");
 
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
+        vTaskDelay(10000 / portTICK_PERIOD_MS);  // 10 second delay to allow inference to complete
     }
 }
 
